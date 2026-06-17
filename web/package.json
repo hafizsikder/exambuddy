@@ -1,0 +1,26 @@
+{
+  "name": "exam-buddy-web",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node server/index.js --dev",
+    "build": "vite build",
+    "start": "node server/index.js",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@vitejs/plugin-react": "^5.1.1",
+    "adm-zip": "^0.5.16",
+    "express": "^5.2.1",
+    "lucide-react": "^0.561.0",
+    "multer": "^2.0.2",
+    "openai": "^6.10.0",
+    "pdf-parse": "^2.4.5",
+    "react": "^19.2.1",
+    "react-dom": "^19.2.1",
+    "vite": "^7.3.0",
+    "vitest": "^4.0.15"
+  },
+  "devDependencies": {}
+}
