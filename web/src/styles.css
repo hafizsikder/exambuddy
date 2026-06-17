@@ -277,7 +277,26 @@ textarea {
   margin: 0;
   padding-left: 22px;
   color: var(--muted);
-  line-height: 1.55;
+  line-height: 1.45;
+}
+
+.concepts li {
+  margin-bottom: 10px;
+}
+
+.concepts strong,
+.concepts span {
+  display: block;
+}
+
+.concepts strong {
+  color: var(--text);
+  font-size: 0.94rem;
+}
+
+.concepts span {
+  margin-top: 2px;
+  font-size: 0.84rem;
 }
 
 .empty,

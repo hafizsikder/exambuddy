@@ -2,12 +2,12 @@ import unittest
 
 from exam_buddy.generation import LocalStudyGenerator, check_answer
 from exam_buddy.models import PracticeQuestion, QuizQuestion
-from exam_buddy.parser import extract_key_concepts
+from exam_buddy.parser import extract_key_concept_details, extract_key_concepts
 from exam_buddy.sessions import PracticeSession, TimedQuizSession
 
 
 class ParserTests(unittest.TestCase):
-    def test_extract_key_concepts_returns_ranked_study_terms(self):
+    def test_extract_key_concepts_returns_source_backed_study_ideas(self):
         text = """
         Photosynthesis converts light energy into chemical energy. Chlorophyll
         absorbs sunlight inside chloroplasts. Photosynthesis supports glucose
@@ -20,7 +20,27 @@ class ParserTests(unittest.TestCase):
         self.assertGreaterEqual(len(concepts), 5)
         self.assertLessEqual(len(concepts), 8)
         self.assertIn("photosynthesis", [item.lower() for item in concepts])
-        self.assertTrue(any("glucose" in item.lower() for item in concepts))
+        self.assertIn("light energy", [item.lower() for item in concepts])
+        self.assertIn("glucose production", [item.lower() for item in concepts])
+        self.assertIn("cellular respiration", [item.lower() for item in concepts])
+        self.assertNotIn("energy", [item.lower() for item in concepts])
+        self.assertNotIn("release", [item.lower() for item in concepts])
+
+    def test_extract_key_concept_details_include_evidence_sentences(self):
+        text = """
+        Photosynthesis converts light energy into chemical energy. Chlorophyll
+        absorbs sunlight inside chloroplasts. Photosynthesis supports glucose
+        production, oxygen release, and plant growth.
+        """
+
+        details = extract_key_concept_details(text, minimum=5, maximum=8)
+
+        self.assertGreaterEqual(len(details), 5)
+        first_titles = [detail.title.lower() for detail in details]
+        self.assertIn("light energy", first_titles)
+        light_energy = next(detail for detail in details if detail.title.lower() == "light energy")
+        self.assertIn("Photosynthesis converts light energy", light_energy.source_sentence)
+        self.assertIn("light energy", light_energy.explanation.lower())
 
 
 class GenerationTests(unittest.TestCase):
@@ -49,6 +69,22 @@ class GenerationTests(unittest.TestCase):
             {"mcq", "fill_in", "rearrange", "math_problem"},
             {question.question_type for question in study_set.quiz_questions},
         )
+
+    def test_local_generator_builds_flashcards_from_source_evidence(self):
+        text = """
+        Photosynthesis converts light energy into chemical energy. Chlorophyll
+        absorbs sunlight inside chloroplasts. Photosynthesis supports glucose
+        production, oxygen release, and plant growth.
+        """
+        details = extract_key_concept_details(text, minimum=5, maximum=8)
+
+        study_set = LocalStudyGenerator().generate(details, card_count=5, quiz_count=10, source_text=text)
+
+        answers = "\n".join(card.answer for card in study_set.flashcards)
+        self.assertIn("Photosynthesis converts light energy into chemical energy", answers)
+        self.assertIn("glucose production", answers.lower())
+        self.assertNotIn("is a key concept from the source", answers)
+        self.assertNotIn("Explain its definition", answers)
 
     def test_check_answer_handles_case_spacing_and_mcq_options(self):
         fill = QuizQuestion(

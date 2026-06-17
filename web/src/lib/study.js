@@ -59,46 +59,111 @@ const STOP_WORDS = new Set([
   'your',
 ]);
 
+const BOUNDARY_WORDS = new Set([
+  ...STOP_WORDS,
+  'absorbs',
+  'allows',
+  'can',
+  'causes',
+  'convert',
+  'converts',
+  'create',
+  'creates',
+  'describe',
+  'describes',
+  'explain',
+  'explains',
+  'include',
+  'includes',
+  'make',
+  'makes',
+  'mean',
+  'means',
+  'provide',
+  'provides',
+  'show',
+  'shows',
+  'support',
+  'supports',
+  'use',
+  'used',
+]);
+
+const WEAK_SINGLE_WORDS = new Set([
+  'application',
+  'cells',
+  'concept',
+  'concepts',
+  'definition',
+  'energy',
+  'example',
+  'growth',
+  'idea',
+  'ideas',
+  'material',
+  'method',
+  'notes',
+  'process',
+  'production',
+  'purpose',
+  'release',
+  'source',
+  'study',
+  'system',
+  'term',
+  'terms',
+  'thing',
+  'things',
+  'topic',
+  'topics',
+]);
+
+const ACRONYMS = new Set(['atp', 'dna', 'rna', 'html', 'css', 'api', 'cpu', 'gpu', 'pdf']);
 const QUESTION_TYPES = ['mcq', 'fill_in', 'rearrange', 'math_problem'];
 
 export function extractKeyConcepts(text, { minimum = 5, maximum = 24 } = {}) {
-  const cleaned = cleanText(text).toLowerCase();
-  if (!cleaned) return [];
+  return extractKeyConceptDetails(text, { minimum, maximum }).map((concept) => concept.title);
+}
 
-  const words = Array.from(cleaned.matchAll(/[a-z][a-z0-9'-]{2,}/g), (match) => match[0]).filter(
-    (word) => !STOP_WORDS.has(word) && !/^\d+$/.test(word),
-  );
-  if (!words.length) return [];
+export function extractKeyConceptDetails(text, { minimum = 5, maximum = 24 } = {}) {
+  const cleaned = cleanText(text);
+  const sentences = splitSentences(cleaned);
+  if (!sentences.length) return [];
+
+  const allWords = [];
+  for (const sentence of sentences) {
+    const words = Array.from(sentence.toLowerCase().matchAll(/[a-z][a-z0-9'-]{1,}/g), (match) => match[0]).filter(
+      (word) => !/^\d+$/.test(word),
+    );
+    allWords.push(...words.filter((word) => !STOP_WORDS.has(word)));
+  }
+  if (!allWords.length) return [];
 
   const wordCounts = new Map();
-  const firstSeen = new Map();
-  words.forEach((word, index) => {
-    wordCounts.set(word, (wordCounts.get(word) ?? 0) + 1);
-    if (!firstSeen.has(word)) firstSeen.set(word, index);
-  });
+  allWords.forEach((word) => wordCounts.set(word, (wordCounts.get(word) ?? 0) + 1));
 
   const candidates = new Map();
-  for (const [word, count] of wordCounts.entries()) {
-    candidates.set(word, count * 10 + Math.min(word.length, 16) / 4);
-  }
+  const firstSeen = new Map();
+  const candidateSentence = new Map();
 
-  for (const size of [2, 3]) {
-    const phraseCounts = new Map();
-    for (let index = 0; index <= words.length - size; index += 1) {
-      const phraseWords = words.slice(index, index + size);
-      if (new Set(phraseWords).size === 1) continue;
-      const phrase = phraseWords.join(' ');
-      phraseCounts.set(phrase, (phraseCounts.get(phrase) ?? 0) + 1);
-      if (!firstSeen.has(phrase)) firstSeen.set(phrase, index);
-    }
-    for (const [phrase, count] of phraseCounts.entries()) {
-      const phraseWords = phrase.split(' ');
-      const hasRepeatedWord = phraseWords.some((word) => (wordCounts.get(word) ?? 0) > 1);
-      if (count > 1 || hasRepeatedWord) {
-        candidates.set(phrase, count * 7 + phraseWords.length * 2);
+  sentences.forEach((sentence, sentenceIndex) => {
+    const fragments = sentence.split(/[,;:()]|\b(?:and|or)\b/i);
+    for (const fragment of fragments) {
+      const words = Array.from(fragment.toLowerCase().matchAll(/[a-z][a-z0-9'-]{1,}/g), (match) => match[0]);
+      const segments = [];
+      let current = [];
+      for (const word of words) {
+        if (BOUNDARY_WORDS.has(word)) {
+          if (current.length) segments.push(current);
+          current = [];
+        } else {
+          current.push(word);
+        }
       }
+      if (current.length) segments.push(current);
+      segments.forEach((segment) => addCandidatesFromSegment(segment, sentenceIndex, sentences, wordCounts, firstSeen, candidateSentence, candidates));
     }
-  }
+  });
 
   const ranked = Array.from(candidates.keys()).sort((left, right) => {
     const scoreDiff = candidates.get(right) - candidates.get(left);
@@ -107,50 +172,59 @@ export function extractKeyConcepts(text, { minimum = 5, maximum = 24 } = {}) {
     if (positionDiff) return positionDiff;
     return left.localeCompare(right);
   });
+  const multiwordCandidateParts = new Set(
+    ranked.flatMap((candidate) => {
+      const parts = candidate.split(' ');
+      return parts.length > 1 ? parts : [];
+    }),
+  );
 
-  const results = [];
-  const usedWords = new Set();
+  const selected = [];
   for (const candidate of ranked) {
-    const parts = candidate.split(' ');
-    if (parts.length > 1 && parts.some((part) => usedWords.has(part))) continue;
-    results.push(candidate);
-    parts.forEach((part) => usedWords.add(part));
-    if (results.length >= maximum) break;
+    if (candidate.split(' ').length === 1 && multiwordCandidateParts.has(candidate)) continue;
+    if (isRedundantCandidate(candidate, selected)) continue;
+    selected.push(candidate);
+    if (selected.length >= maximum) break;
   }
 
-  if (results.length < minimum) {
+  if (selected.length < minimum) {
     const fallbackWords = Array.from(wordCounts.keys()).sort((left, right) => {
       const countDiff = wordCounts.get(right) - wordCounts.get(left);
       if (countDiff) return countDiff;
-      return firstSeen.get(left) - firstSeen.get(right);
+      return left.localeCompare(right);
     });
     for (const word of fallbackWords) {
-      if (!results.includes(word)) results.push(word);
-      if (results.length >= Math.min(minimum, maximum)) break;
+      if (validCandidate([word]) && !selected.includes(word)) selected.push(word);
+      if (selected.length >= Math.min(minimum, maximum)) break;
     }
   }
 
-  return results.slice(0, maximum);
+  return selected.slice(0, maximum).map((candidate) => ({
+    title: formatConceptTitle(candidate),
+    explanation: buildExplanation(candidate, candidateSentence.get(candidate) || ''),
+    sourceSentence: candidateSentence.get(candidate) || '',
+  }));
 }
 
-export function generateStudySet(concepts, { cardCount = 10, quizCount = 12 } = {}) {
-  const prepared = prepareConcepts(concepts);
+export function generateStudySet(concepts, { cardCount = 10, quizCount = 12, sourceText = '' } = {}) {
+  const prepared = prepareConceptRecords(concepts, sourceText);
+  const conceptTitles = prepared.map((concept) => concept.title);
   const flashcardTotal = clamp(cardCount, 5, Math.max(5, prepared.length));
   const quizTotal = clamp(quizCount, 10, 15);
 
   const flashcards = cycleTake(prepared, flashcardTotal).map((concept) => ({
-    question: `What is the key idea behind ${concept}?`,
-    answer: `${concept} is a key concept from the source. Explain its definition, purpose, and one example.`,
-    concept,
+    question: `What does ${concept.title} mean in this material?`,
+    answer: composeFlashcardAnswer(concept),
+    concept: concept.title,
   }));
 
   const practiceQuestions = cycleTake(prepared, Math.max(5, Math.min(prepared.length, 12))).map((concept) => ({
-    prompt: `In your own words, explain ${concept}.`,
-    answer: concept,
-    concept,
+    prompt: composePracticePrompt(concept),
+    answer: concept.title,
+    concept: concept.title,
   }));
 
-  const quizQuestions = cycleTake(prepared, quizTotal).map((concept, index) => buildQuizQuestion(concept, prepared, index));
+  const quizQuestions = cycleTake(prepared, quizTotal).map((concept, index) => buildQuizQuestion(concept, conceptTitles, index));
 
   return { flashcards, practiceQuestions, quizQuestions };
 }
@@ -264,19 +338,20 @@ function buildQuizQuestion(concept, concepts, index) {
   const timerSeconds = 20 + (index % 5) * 10;
 
   if (type === 'mcq') {
+    const clue = concept.sourceSentence || concept.explanation || concept.title;
     return {
-      prompt: `Which option best matches this study concept: ${concept}?`,
-      answer: concept,
+      prompt: `Which concept is described by this source clue: ${clue}`,
+      answer: concept.title,
       type,
       timerSeconds,
-      options: makeOptions(concept, concepts, index),
+      options: makeOptions(concept.title, concepts, index),
     };
   }
 
   if (type === 'fill_in') {
     return {
-      prompt: 'Fill in the blank: _____ is one of the key concepts from this material.',
-      answer: concept,
+      prompt: fillInPrompt(concept),
+      answer: concept.title,
       type,
       timerSeconds,
       options: [],
@@ -284,7 +359,7 @@ function buildQuizQuestion(concept, concepts, index) {
   }
 
   if (type === 'rearrange') {
-    const phrase = concept.split(' ').length >= 2 ? concept : `key idea ${concept}`;
+    const phrase = concept.title.split(' ').length >= 2 ? concept.title : `key idea ${concept.title}`;
     return {
       prompt: `Rearrange these words into the correct phrase: ${phrase.split(' ').reverse().join(' / ')}`,
       answer: phrase,
@@ -306,17 +381,88 @@ function buildQuizQuestion(concept, concepts, index) {
 }
 
 function prepareConcepts(concepts) {
+  return prepareConceptRecords(concepts).map((concept) => concept.title);
+}
+
+function prepareConceptRecords(concepts, sourceText = '') {
   const clean = [];
   const seen = new Set();
   for (const concept of concepts) {
-    const item = String(concept).replace(/\s+/g, ' ').replace(/[ .,:;]+$/g, '').trim();
-    const key = item.toLowerCase();
-    if (item && !seen.has(key)) {
-      clean.push(item);
+    const record = coerceConceptRecord(concept, sourceText);
+    const key = record.title.toLowerCase();
+    if (record.title && !seen.has(key)) {
+      clean.push(record);
       seen.add(key);
     }
   }
-  return clean.length ? clean : ['main idea', 'definition', 'example', 'process', 'application'];
+  return clean.length
+    ? clean
+    : [
+        { title: 'main idea', explanation: 'Review the main idea from the source material.', sourceSentence: '' },
+        { title: 'definition', explanation: 'Review the definition from the source material.', sourceSentence: '' },
+        { title: 'example', explanation: 'Review an example from the source material.', sourceSentence: '' },
+        { title: 'process', explanation: 'Review the process described in the source material.', sourceSentence: '' },
+        { title: 'application', explanation: 'Review how the material can be applied.', sourceSentence: '' },
+      ];
+}
+
+function coerceConceptRecord(concept, sourceText = '') {
+  let title = '';
+  let explanation = '';
+  let sourceSentence = '';
+
+  if (concept && typeof concept === 'object') {
+    title = cleanConceptTitle(concept.title || concept.concept || concept.name);
+    explanation = String(concept.explanation || '').trim();
+    sourceSentence = String(concept.sourceSentence || concept.source_sentence || '').trim();
+  } else {
+    title = cleanConceptTitle(concept);
+  }
+
+  if (!sourceSentence && sourceText && title) sourceSentence = findSourceSentence(title, sourceText);
+  if (!explanation && sourceSentence) explanation = `${title}: ${sourceSentence.replace(/[.!?]+$/g, '')}.`;
+  if (!explanation && title) explanation = `${title}: review this concept in the source material.`;
+  return { title, explanation, sourceSentence };
+}
+
+function cleanConceptTitle(value) {
+  return String(value ?? '')
+    .replace(/\s+/g, ' ')
+    .replace(/[ .,:;]+$/g, '')
+    .trim();
+}
+
+function composeFlashcardAnswer(concept) {
+  if (concept.sourceSentence) return `${concept.title}: ${concept.sourceSentence.replace(/[.!?]+$/g, '')}.`;
+  return concept.explanation || `${concept.title}: review this concept in the source material.`;
+}
+
+function composePracticePrompt(concept) {
+  if (concept.sourceSentence) return `In your own words, explain ${concept.title} using this source clue: ${concept.sourceSentence}`;
+  return `In your own words, explain ${concept.title}.`;
+}
+
+function fillInPrompt(concept) {
+  if (concept.sourceSentence) {
+    const pattern = new RegExp(escapeRegExp(concept.title), 'i');
+    const clue = concept.sourceSentence.replace(pattern, '_____');
+    if (clue !== concept.sourceSentence) return `Fill in the blank from the source: ${clue}`;
+  }
+  return 'Fill in the blank: _____ is one of the key concepts from this material.';
+}
+
+function findSourceSentence(title, sourceText) {
+  const sentences = splitSentences(sourceText);
+  const phrasePattern = new RegExp(`\\b${escapeRegExp(title)}\\b`, 'i');
+  for (const sentence of sentences) {
+    if (phrasePattern.test(sentence)) return sentence;
+  }
+  const words = title
+    .toLowerCase()
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((word) => new RegExp(`\\b${escapeRegExp(word)}\\b`, 'i'));
+  return sentences.find((sentence) => words.every((pattern) => pattern.test(sentence))) || '';
 }
 
 function cycleTake(items, count) {
@@ -328,6 +474,69 @@ function makeOptions(answer, concepts, seed) {
   while (distractors.length < 3) distractors.push(`related idea ${distractors.length + 1}`);
   const options = [answer, ...distractors.slice(0, 3)];
   return seededShuffle(options, seed);
+}
+
+function splitSentences(text) {
+  const normalized = cleanText(text).replace(/\s+/g, ' ').trim();
+  if (!normalized) return [];
+  return normalized.split(/(?<=[.!?])\s+/).filter((sentence) => sentence.trim().length >= 8);
+}
+
+function addCandidatesFromSegment(segment, sentenceIndex, sentences, wordCounts, firstSeen, candidateSentence, candidates) {
+  for (let start = 0; start < segment.length; start += 1) {
+    for (let size = 1; size <= Math.min(4, segment.length - start); size += 1) {
+      const parts = segment.slice(start, start + size);
+      if (!validCandidate(parts)) continue;
+      const key = parts.join(' ');
+      if (!firstSeen.has(key)) firstSeen.set(key, firstSeen.size);
+      if (!candidateSentence.has(key)) candidateSentence.set(key, sentences[sentenceIndex]);
+      const score = candidateScore(parts, wordCounts, start === 0);
+      candidates.set(key, candidates.has(key) ? candidates.get(key) + 3 : score);
+    }
+  }
+}
+
+function validCandidate(parts) {
+  if (!parts.length || new Set(parts).size !== parts.length) return false;
+  if (parts.some((part) => STOP_WORDS.has(part))) return false;
+  if (parts.length === 1) {
+    const [word] = parts;
+    return !WEAK_SINGLE_WORDS.has(word) && word.length >= 4;
+  }
+  if (WEAK_SINGLE_WORDS.has(parts[0])) return false;
+  return !parts.every((part) => WEAK_SINGLE_WORDS.has(part));
+}
+
+function candidateScore(parts, wordCounts, startsSegment) {
+  if (parts.length === 1) {
+    const [word] = parts;
+    return (wordCounts.get(word) ?? 0) * 12 + Math.min(word.length, 18) / 2 + (startsSegment ? 8 : 0);
+  }
+  const repeatedWordBonus = parts.filter((word) => (wordCounts.get(word) ?? 0) > 1).length * 2;
+  const acronymBonus = parts.some((word) => ACRONYMS.has(word)) ? 4 : 0;
+  return 16 + parts.length * 5 + repeatedWordBonus + acronymBonus + (startsSegment ? 4 : 0);
+}
+
+function isRedundantCandidate(candidate, selected) {
+  const candidateParts = new Set(candidate.split(' '));
+  return selected.some((existing) => {
+    const existingParts = new Set(existing.split(' '));
+    if (candidateParts.size === existingParts.size && [...candidateParts].every((part) => existingParts.has(part))) return true;
+    return candidateParts.size === 1 && existingParts.has(candidate);
+  });
+}
+
+function formatConceptTitle(candidate) {
+  return candidate
+    .split(' ')
+    .map((word) => (ACRONYMS.has(word) ? word.toUpperCase() : word))
+    .join(' ');
+}
+
+function buildExplanation(candidate, sentence) {
+  const title = formatConceptTitle(candidate);
+  if (sentence) return `${title}: ${sentence.replace(/[.!?]+$/g, '')}.`;
+  return `${title}: review this concept in the source material.`;
 }
 
 function seededShuffle(items, seed) {
@@ -361,6 +570,10 @@ function cleanText(text) {
     .replace(/[ \t]+/g, ' ')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
+}
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function clamp(value, low, high) {

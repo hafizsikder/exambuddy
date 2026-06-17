@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from pathlib import Path
 import re
@@ -15,6 +15,9 @@ STOP_WORDS = {
     "again",
     "against",
     "also",
+    "and",
+    "are",
+    "but",
     "because",
     "before",
     "being",
@@ -23,10 +26,19 @@ STOP_WORDS = {
     "could",
     "during",
     "each",
+    "for",
     "from",
     "have",
+    "has",
+    "how",
+    "its",
     "into",
+    "is",
     "inside",
+    "not",
+    "of",
+    "on",
+    "or",
     "more",
     "most",
     "other",
@@ -36,6 +48,7 @@ STOP_WORDS = {
     "such",
     "than",
     "that",
+    "the",
     "their",
     "then",
     "there",
@@ -43,6 +56,7 @@ STOP_WORDS = {
     "they",
     "this",
     "through",
+    "to",
     "under",
     "uses",
     "using",
@@ -55,6 +69,73 @@ STOP_WORDS = {
     "your",
 }
 
+BOUNDARY_WORDS = STOP_WORDS | {
+    "absorbs",
+    "allows",
+    "can",
+    "causes",
+    "convert",
+    "converts",
+    "create",
+    "creates",
+    "describe",
+    "describes",
+    "explain",
+    "explains",
+    "include",
+    "includes",
+    "make",
+    "makes",
+    "mean",
+    "means",
+    "provide",
+    "provides",
+    "show",
+    "shows",
+    "support",
+    "supports",
+    "use",
+    "used",
+}
+
+WEAK_SINGLE_WORDS = {
+    "application",
+    "cells",
+    "concept",
+    "concepts",
+    "definition",
+    "energy",
+    "example",
+    "growth",
+    "idea",
+    "ideas",
+    "material",
+    "method",
+    "notes",
+    "process",
+    "production",
+    "purpose",
+    "release",
+    "source",
+    "study",
+    "system",
+    "term",
+    "terms",
+    "thing",
+    "things",
+    "topic",
+    "topics",
+}
+
+ACRONYMS = {"atp", "dna", "rna", "html", "css", "api", "cpu", "gpu", "pdf"}
+
+
+@dataclass(frozen=True)
+class KeyConcept:
+    title: str
+    explanation: str
+    source_sentence: str
+
 
 @dataclass(frozen=True)
 class ParsedContent:
@@ -62,6 +143,7 @@ class ParsedContent:
     source_type: str
     text: str
     concepts: list[str]
+    concept_details: list[KeyConcept] = field(default_factory=list)
 
 
 class ParseError(RuntimeError):
@@ -109,7 +191,14 @@ def parse_text(raw_text: str, title: str = "Pasted text") -> ParsedContent:
     text = _clean_text(raw_text)
     if not text:
         raise ParseError("No readable text was found.")
-    return ParsedContent(title=title, source_type="text", text=text, concepts=extract_key_concepts(text))
+    concept_details = extract_key_concept_details(text)
+    return ParsedContent(
+        title=title,
+        source_type="text",
+        text=text,
+        concepts=[concept.title for concept in concept_details],
+        concept_details=concept_details,
+    )
 
 
 def parse_file(path: str | Path) -> ParsedContent:
@@ -133,11 +222,13 @@ def parse_file(path: str | Path) -> ParsedContent:
     text = _clean_text(text)
     if not text:
         raise ParseError("No readable text was found in the selected file.")
+    concept_details = extract_key_concept_details(text)
     return ParsedContent(
         title=file_path.name,
         source_type=source_type,
         text=text,
-        concepts=extract_key_concepts(text),
+        concepts=[concept.title for concept in concept_details],
+        concept_details=concept_details,
     )
 
 
@@ -166,66 +257,121 @@ def parse_url(url: str, timeout: int = 15) -> ParsedContent:
     text = _clean_text(text)
     if not text:
         raise ParseError("No readable text was found at the web link.")
-    return ParsedContent(title=title, source_type="web", text=text, concepts=extract_key_concepts(text))
+    concept_details = extract_key_concept_details(text)
+    return ParsedContent(
+        title=title,
+        source_type="web",
+        text=text,
+        concepts=[concept.title for concept in concept_details],
+        concept_details=concept_details,
+    )
 
 
 def extract_key_concepts(text: str, minimum: int = 5, maximum: int = 24) -> list[str]:
-    cleaned = _clean_text(text).lower()
+    return [concept.title for concept in extract_key_concept_details(text, minimum=minimum, maximum=maximum)]
+
+
+def extract_key_concept_details(text: str, minimum: int = 5, maximum: int = 24) -> list[KeyConcept]:
+    cleaned_text = _clean_text(text)
+    cleaned = cleaned_text.lower()
     if not cleaned:
         return []
 
-    words = [
-        word
-        for word in re.findall(r"[a-z][a-z0-9'-]{2,}", cleaned)
-        if word not in STOP_WORDS and not word.isdigit()
-    ]
-    if not words:
+    sentences = _split_sentences(cleaned_text)
+    if not sentences:
         return []
 
-    word_counts = Counter(words)
+    all_words: list[str] = []
+    candidate_sentence: dict[str, str] = {}
     first_seen: dict[str, int] = {}
-    for index, word in enumerate(words):
-        first_seen.setdefault(word, index)
-
     candidates: dict[str, float] = {}
-    for word, count in word_counts.items():
-        candidates[word] = count * 10 + min(len(word), 16) / 4
 
-    phrase_counts: Counter[str] = Counter()
-    for size in (2, 3):
-        for index in range(len(words) - size + 1):
-            phrase_words = words[index : index + size]
-            if len(set(phrase_words)) == 1:
-                continue
-            phrase = " ".join(phrase_words)
-            phrase_counts[phrase] += 1
-            first_seen.setdefault(phrase, index)
+    for sentence in sentences:
+        words = re.findall(r"[a-z][a-z0-9'-]{1,}", sentence.lower())
+        words = [word for word in words if not word.isdigit()]
+        all_words.extend(word for word in words if word not in STOP_WORDS)
 
-    for phrase, count in phrase_counts.items():
-        phrase_score = count * 7 + len(phrase.split()) * 2
-        if count > 1 or any(word_counts[word] > 1 for word in phrase.split()):
-            candidates[phrase] = phrase_score
+    if not all_words:
+        return []
+
+    word_counts = Counter(all_words)
+
+    for sentence_index, sentence in enumerate(sentences):
+        fragments = re.split(r"[,;:()]|\b(?:and|or)\b", sentence, flags=re.IGNORECASE)
+        for fragment in fragments:
+            words = re.findall(r"[a-z][a-z0-9'-]{1,}", fragment.lower())
+            segments: list[list[str]] = []
+            current: list[str] = []
+            for word in words:
+                if word in BOUNDARY_WORDS:
+                    if current:
+                        segments.append(current)
+                        current = []
+                    continue
+                current.append(word)
+            if current:
+                segments.append(current)
+
+            for segment in segments:
+                _add_candidates_from_segment(segment, sentence_index, sentences, word_counts, first_seen, candidate_sentence, candidates)
 
     ranked = sorted(candidates, key=lambda item: (-candidates[item], first_seen[item], item))
-    results: list[str] = []
-    used_words: set[str] = set()
+    multiword_candidate_parts = {
+        part
+        for candidate in ranked
+        if len(candidate.split()) > 1
+        for part in candidate.split()
+    }
+    selected: list[str] = []
     for candidate in ranked:
-        parts = candidate.split()
-        if len(parts) > 1 and any(part in used_words for part in parts):
+        if len(candidate.split()) == 1 and candidate in multiword_candidate_parts:
             continue
-        results.append(candidate)
-        used_words.update(parts)
-        if len(results) >= maximum:
+        if _is_redundant(candidate, selected):
+            continue
+        selected.append(candidate)
+        if len(selected) >= maximum:
             break
 
-    if len(results) < minimum:
-        for word in sorted(word_counts, key=lambda item: (-word_counts[item], first_seen[item], item)):
-            if word not in results:
-                results.append(word)
-            if len(results) >= min(minimum, maximum):
+    if len(selected) < minimum:
+        fallback_words = [
+            word
+            for word in sorted(word_counts, key=lambda item: (-word_counts[item], item))
+            if _valid_candidate([word]) and word not in selected
+        ]
+        for word in fallback_words:
+            selected.append(word)
+            if len(selected) >= min(minimum, maximum):
                 break
 
-    return results[:maximum]
+    return [
+        KeyConcept(
+            title=_format_concept_title(candidate),
+            explanation=_build_explanation(candidate, candidate_sentence.get(candidate, "")),
+            source_sentence=candidate_sentence.get(candidate, ""),
+        )
+        for candidate in selected[:maximum]
+    ]
+
+
+def _add_candidates_from_segment(
+    segment: list[str],
+    sentence_index: int,
+    sentences: list[str],
+    word_counts: Counter[str],
+    first_seen: dict[str, int],
+    candidate_sentence: dict[str, str],
+    candidates: dict[str, float],
+) -> None:
+    for start in range(len(segment)):
+        for size in range(1, min(4, len(segment) - start) + 1):
+            parts = segment[start : start + size]
+            if not _valid_candidate(parts):
+                continue
+            key = " ".join(parts)
+            first_seen.setdefault(key, len(first_seen))
+            candidate_sentence.setdefault(key, sentences[sentence_index])
+            score = _candidate_score(parts, word_counts, start == 0)
+            candidates[key] = candidates[key] + 3 if key in candidates else score
 
 
 def _extract_pdf_text(path: Path) -> str:
@@ -271,3 +417,59 @@ def _clean_text(text: str) -> str:
     text = re.sub(r"[ \t]+", " ", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
     return text.strip()
+
+
+def _split_sentences(text: str) -> list[str]:
+    normalized = re.sub(r"\s+", " ", text).strip()
+    if not normalized:
+        return []
+    return [
+        sentence.strip()
+        for sentence in re.split(r"(?<=[.!?])\s+", normalized)
+        if len(sentence.strip()) >= 8
+    ]
+
+
+def _valid_candidate(parts: list[str]) -> bool:
+    if not parts or len(set(parts)) != len(parts):
+        return False
+    if any(part in STOP_WORDS for part in parts):
+        return False
+    if len(parts) == 1:
+        word = parts[0]
+        return word not in WEAK_SINGLE_WORDS and len(word) >= 4
+    if parts[0] in WEAK_SINGLE_WORDS:
+        return False
+    return not all(part in WEAK_SINGLE_WORDS for part in parts)
+
+
+def _candidate_score(parts: list[str], word_counts: Counter[str], starts_segment: bool) -> float:
+    if len(parts) == 1:
+        word = parts[0]
+        return word_counts[word] * 12 + min(len(word), 18) / 2 + (8 if starts_segment else 0)
+
+    repeated_word_bonus = sum(2 for word in parts if word_counts[word] > 1)
+    acronym_bonus = 4 if any(word in ACRONYMS for word in parts) else 0
+    return 16 + len(parts) * 5 + repeated_word_bonus + acronym_bonus + (4 if starts_segment else 0)
+
+
+def _is_redundant(candidate: str, selected: list[str]) -> bool:
+    candidate_parts = set(candidate.split())
+    for existing in selected:
+        existing_parts = set(existing.split())
+        if candidate_parts == existing_parts:
+            return True
+        if len(candidate_parts) == 1 and candidate_parts.issubset(existing_parts):
+            return True
+    return False
+
+
+def _format_concept_title(candidate: str) -> str:
+    return " ".join(word.upper() if word in ACRONYMS else word for word in candidate.split())
+
+
+def _build_explanation(candidate: str, sentence: str) -> str:
+    title = _format_concept_title(candidate)
+    if sentence:
+        return f"{title}: {sentence.rstrip('.!?')}."
+    return f"{title}: review this concept in the source material."

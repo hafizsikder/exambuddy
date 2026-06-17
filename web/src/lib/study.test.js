@@ -3,12 +3,13 @@ import {
   answerMatches,
   createPracticeSession,
   createTimedQuizSession,
+  extractKeyConceptDetails,
   extractKeyConcepts,
   generateStudySet,
 } from './study.js';
 
 describe('web study engine', () => {
-  it('extracts ranked key concepts from source text', () => {
+  it('extracts source-backed study ideas from source text', () => {
     const text = `
       Photosynthesis converts light energy into chemical energy. Chlorophyll
       absorbs sunlight inside chloroplasts. Photosynthesis supports glucose
@@ -21,7 +22,26 @@ describe('web study engine', () => {
     expect(concepts.length).toBeGreaterThanOrEqual(5);
     expect(concepts.length).toBeLessThanOrEqual(8);
     expect(concepts.map((item) => item.toLowerCase())).toContain('photosynthesis');
-    expect(concepts.some((item) => item.toLowerCase().includes('glucose'))).toBe(true);
+    expect(concepts.map((item) => item.toLowerCase())).toContain('light energy');
+    expect(concepts.map((item) => item.toLowerCase())).toContain('glucose production');
+    expect(concepts.map((item) => item.toLowerCase())).toContain('cellular respiration');
+    expect(concepts.map((item) => item.toLowerCase())).not.toContain('energy');
+    expect(concepts.map((item) => item.toLowerCase())).not.toContain('release');
+  });
+
+  it('returns concept details with source evidence sentences', () => {
+    const text = `
+      Photosynthesis converts light energy into chemical energy. Chlorophyll
+      absorbs sunlight inside chloroplasts. Photosynthesis supports glucose
+      production, oxygen release, and plant growth.
+    `;
+
+    const details = extractKeyConceptDetails(text, { minimum: 5, maximum: 8 });
+    const lightEnergy = details.find((detail) => detail.title.toLowerCase() === 'light energy');
+
+    expect(details.length).toBeGreaterThanOrEqual(5);
+    expect(lightEnergy?.sourceSentence).toContain('Photosynthesis converts light energy');
+    expect(lightEnergy?.explanation.toLowerCase()).toContain('light energy');
   });
 
   it('excludes common connector words from concepts', () => {
@@ -58,6 +78,23 @@ describe('web study engine', () => {
       new Set(['mcq', 'fill_in', 'rearrange', 'math_problem']),
     );
     expect(studySet.quizQuestions.every((question) => question.timerSeconds >= 20 && question.timerSeconds <= 60)).toBe(true);
+  });
+
+  it('builds flashcards from source evidence instead of generic filler', () => {
+    const text = `
+      Photosynthesis converts light energy into chemical energy. Chlorophyll
+      absorbs sunlight inside chloroplasts. Photosynthesis supports glucose
+      production, oxygen release, and plant growth.
+    `;
+    const details = extractKeyConceptDetails(text, { minimum: 5, maximum: 8 });
+
+    const studySet = generateStudySet(details, { cardCount: 5, quizCount: 10, sourceText: text });
+    const answers = studySet.flashcards.map((card) => card.answer).join('\n');
+
+    expect(answers).toContain('Photosynthesis converts light energy into chemical energy');
+    expect(answers.toLowerCase()).toContain('glucose production');
+    expect(answers).not.toContain('is a key concept from the source');
+    expect(answers).not.toContain('Explain its definition');
   });
 
   it('checks typed answers and MCQ letter answers', () => {

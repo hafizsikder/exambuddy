@@ -3,7 +3,7 @@ import { generateStudySet } from '../src/lib/study.js';
 
 export async function generateStudyMaterial({ concepts, sourceText = '', cardCount = 10, quizCount = 12, useAi = false }) {
   if (!useAi || !process.env.OPENAI_API_KEY) {
-    return { studySet: generateStudySet(concepts, { cardCount, quizCount }), provider: 'local' };
+    return { studySet: generateStudySet(concepts, { cardCount, quizCount, sourceText }), provider: 'local' };
   }
 
   try {
@@ -13,16 +13,25 @@ export async function generateStudyMaterial({ concepts, sourceText = '', cardCou
       input: buildPrompt(concepts, sourceText, cardCount, quizCount),
       store: false,
     });
-    return { studySet: normalizeAiStudySet(response.output_text, concepts, cardCount, quizCount), provider: 'openai' };
+    return { studySet: normalizeAiStudySet(response.output_text, concepts, cardCount, quizCount, sourceText), provider: 'openai' };
   } catch {
-    return { studySet: generateStudySet(concepts, { cardCount, quizCount }), provider: 'local-fallback' };
+    return { studySet: generateStudySet(concepts, { cardCount, quizCount, sourceText }), provider: 'local-fallback' };
   }
 }
 
 function buildPrompt(concepts, sourceText, cardCount, quizCount) {
+  const conceptEvidence = (Array.isArray(concepts) ? concepts : [])
+    .map((concept) => {
+      if (concept && typeof concept === 'object') {
+        return `- ${concept.title || concept.concept || concept.name}: ${concept.sourceSentence || concept.source_sentence || concept.explanation || ''}`;
+      }
+      return `- ${concept}`;
+    })
+    .join('\n');
   return `
 Create an Exam Buddy study set as strict JSON only.
-Concepts: ${concepts.join(', ')}
+Concepts and source evidence:
+${conceptEvidence}
 Source excerpt:
 ${String(sourceText).slice(0, 6000)}
 
@@ -39,10 +48,11 @@ Rules:
 - include mcq, fill_in, rearrange, and math_problem quiz types
 - each timerSeconds must be between 20 and 60
 - answers must be short enough for automated checking
+- flashcard answers must use the source evidence, not generic study advice
 `.trim();
 }
 
-function normalizeAiStudySet(payload, concepts, cardCount, quizCount) {
+function normalizeAiStudySet(payload, concepts, cardCount, quizCount, sourceText = '') {
   const data = JSON.parse(stripCodeFence(payload));
   const studySet = {
     flashcards: Array.isArray(data.flashcards) ? data.flashcards : [],
@@ -51,7 +61,7 @@ function normalizeAiStudySet(payload, concepts, cardCount, quizCount) {
   };
 
   if (studySet.flashcards.length < 5 || studySet.practiceQuestions.length < 1 || studySet.quizQuestions.length < 10) {
-    return generateStudySet(concepts, { cardCount, quizCount });
+    return generateStudySet(concepts, { cardCount, quizCount, sourceText });
   }
 
   return {

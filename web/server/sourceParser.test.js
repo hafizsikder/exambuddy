@@ -28,6 +28,10 @@ describe('server source parser helpers', () => {
     expect(parsed.sourceType).toBe('text');
     expect(parsed.text).toContain('Photosynthesis');
     expect(parsed.concepts.map((item) => item.toLowerCase())).toContain('photosynthesis');
+    expect(parsed.conceptDetails.length).toBeGreaterThanOrEqual(5);
+    expect(parsed.conceptDetails[0]).toHaveProperty('title');
+    expect(parsed.conceptDetails[0]).toHaveProperty('explanation');
+    expect(parsed.conceptDetails[0]).toHaveProperty('sourceSentence');
   });
 
   it('extracts readable body text and page title from html', () => {

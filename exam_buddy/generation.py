@@ -1,15 +1,24 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 import json
 import os
 import random
 import re
-from typing import Any
+from typing import Any, TypeVar
 
 from .models import Flashcard, PracticeQuestion, QuizQuestion, StudySet
 
 
 QUESTION_TYPES = ("mcq", "fill_in", "rearrange", "math_problem")
+T = TypeVar("T")
+
+
+@dataclass(frozen=True)
+class ConceptRecord:
+    title: str
+    explanation: str = ""
+    source_sentence: str = ""
 
 
 class LocalStudyGenerator:
@@ -17,64 +26,67 @@ class LocalStudyGenerator:
 
     def generate(
         self,
-        concepts: list[str],
+        concepts: list[Any],
         card_count: int = 10,
         quiz_count: int = 12,
         source_text: str = "",
     ) -> StudySet:
-        clean_concepts = _prepare_concepts(concepts)
-        flashcard_total = _clamp(card_count, 5, max(5, len(clean_concepts)))
+        concept_records = _prepare_concept_records(concepts, source_text)
+        concept_titles = [concept.title for concept in concept_records]
+        flashcard_total = _clamp(card_count, 5, max(5, len(concept_records)))
         quiz_total = _clamp(quiz_count, 10, 15)
 
         flashcards = [
             Flashcard(
-                question=f"What is the key idea behind {concept}?",
-                answer=f"{concept} is a key concept from the source. Explain its definition, purpose, and one example.",
-                concept=concept,
+                question=f"What does {concept.title} mean in this material?",
+                answer=_compose_flashcard_answer(concept),
+                concept=concept.title,
             )
-            for concept in _cycle_take(clean_concepts, flashcard_total)
+            for concept in _cycle_take(concept_records, flashcard_total)
         ]
 
         practice_questions = [
             PracticeQuestion(
-                prompt=f"In your own words, explain {concept}.",
-                answer=concept,
-                concept=concept,
+                prompt=_compose_practice_prompt(concept),
+                answer=concept.title,
+                concept=concept.title,
             )
-            for concept in _cycle_take(clean_concepts, max(5, min(len(clean_concepts), 12)))
+            for concept in _cycle_take(concept_records, max(5, min(len(concept_records), 12)))
         ]
 
         quiz_questions = [
-            self._build_quiz_question(index, concept, clean_concepts)
-            for index, concept in enumerate(_cycle_take(clean_concepts, quiz_total))
+            self._build_quiz_question(index, concept, concept_titles)
+            for index, concept in enumerate(_cycle_take(concept_records, quiz_total))
         ]
 
         return StudySet(flashcards, practice_questions, quiz_questions)
 
-    def _build_quiz_question(self, index: int, concept: str, concepts: list[str]) -> QuizQuestion:
+    def _build_quiz_question(self, index: int, concept: ConceptRecord, concepts: list[str]) -> QuizQuestion:
         question_type = QUESTION_TYPES[index % len(QUESTION_TYPES)]
         timer_seconds = 20 + (index % 5) * 10
 
         if question_type == "mcq":
-            options = _make_options(concept, concepts, seed=index)
+            options = _make_options(concept.title, concepts, seed=index)
+            clue = concept.source_sentence or concept.explanation or concept.title
             return QuizQuestion(
-                prompt=f"Which option best matches this study concept: {concept}?",
-                answer=concept,
+                prompt=f"Which concept is described by this source clue: {clue}",
+                answer=concept.title,
                 question_type=question_type,
                 timer_seconds=timer_seconds,
                 options=options,
             )
 
         if question_type == "fill_in":
+            prompt = _fill_in_prompt(concept)
             return QuizQuestion(
-                prompt=f"Fill in the blank: _____ is one of the key concepts from this material.",
-                answer=concept,
+                prompt=prompt,
+                answer=concept.title,
                 question_type=question_type,
                 timer_seconds=timer_seconds,
             )
 
         if question_type == "rearrange":
-            phrase = _rearrange_phrase(concept)
+            phrase = _rearrange_phrase(concept.title)
             scrambled = " / ".join(reversed(phrase.split()))
             return QuizQuestion(
                 prompt=f"Rearrange these words into the correct phrase: {scrambled}",
@@ -109,7 +121,7 @@ class OpenAIStudyGenerator:
 
     def generate(
         self,
-        concepts: list[str],
+        concepts: list[Any],
         card_count: int = 10,
         quiz_count: int = 12,
         source_text: str = "",
@@ -126,7 +138,7 @@ class OpenAIStudyGenerator:
                 input=_build_ai_prompt(concepts, card_count, quiz_count, source_text),
                 store=False,
             )
-            return _study_set_from_ai_json(response.output_text, concepts, card_count, quiz_count)
+            return _study_set_from_ai_json(response.output_text, concepts, card_count, quiz_count, source_text)
         except Exception:
             return self.fallback.generate(concepts, card_count, quiz_count, source_text)
 
@@ -154,13 +166,17 @@ def check_answer(question: QuizQuestion | PracticeQuestion, response: str) -> bo
     return actual == expected or expected in actual
 
 
-def _build_ai_prompt(concepts: list[str], card_count: int, quiz_count: int, source_text: str) -> str:
-    concept_text = ", ".join(_prepare_concepts(concepts))
+def _build_ai_prompt(concepts: list[Any], card_count: int, quiz_count: int, source_text: str) -> str:
+    concept_records = _prepare_concept_records(concepts, source_text)
+    concept_text = "\n".join(
+        f"- {concept.title}: {concept.source_sentence or concept.explanation}" for concept in concept_records
+    )
     excerpt = source_text[:6000]
     return f"""
 Create an Exam Buddy study set as strict JSON only.
 
-Concepts: {concept_text}
+Concepts and source evidence:
+{concept_text}
 Source excerpt:
 {excerpt}
 
@@ -179,10 +195,17 @@ Rules:
 - include mcq, fill_in, rearrange, and math_problem quiz types
 - each timer_seconds must be between 20 and 60
 - answers must be short enough for automated checking
+- flashcard answers must use the source evidence, not generic study advice
 """.strip()
 
 
-def _study_set_from_ai_json(payload: str, concepts: list[str], card_count: int, quiz_count: int) -> StudySet:
+def _study_set_from_ai_json(
+    payload: str,
+    concepts: list[Any],
+    card_count: int,
+    quiz_count: int,
+    source_text: str = "",
+) -> StudySet:
     data = json.loads(_strip_code_fence(payload))
     flashcards = [
         Flashcard(
@@ -217,7 +240,7 @@ def _study_set_from_ai_json(payload: str, concepts: list[str], card_count: int, 
         )
 
     if len(flashcards) < 5 or len(quiz_questions) < 10 or not practice_questions:
-        return LocalStudyGenerator().generate(concepts, card_count, quiz_count)
+        return LocalStudyGenerator().generate(concepts, card_count, quiz_count, source_text)
     return StudySet(
         flashcards=flashcards[: max(5, card_count)],
         practice_questions=practice_questions,
@@ -225,19 +248,95 @@ def _study_set_from_ai_json(payload: str, concepts: list[str], card_count: int, 
     )
 
 
-def _prepare_concepts(concepts: list[str]) -> list[str]:
-    clean: list[str] = []
+def _prepare_concepts(concepts: list[Any]) -> list[str]:
+    return [concept.title for concept in _prepare_concept_records(concepts)]
+
+
+def _prepare_concept_records(concepts: list[Any], source_text: str = "") -> list[ConceptRecord]:
+    clean: list[ConceptRecord] = []
     seen: set[str] = set()
     for concept in concepts:
-        item = " ".join(str(concept).split()).strip(" .,:;")
-        key = item.lower()
-        if item and key not in seen:
-            clean.append(item)
+        record = _coerce_concept_record(concept, source_text)
+        key = record.title.lower()
+        if record.title and key not in seen:
+            clean.append(record)
             seen.add(key)
-    return clean or ["main idea", "definition", "example", "process", "application"]
+    return clean or [
+        ConceptRecord("main idea", "Review the main idea from the source material."),
+        ConceptRecord("definition", "Review the definition from the source material."),
+        ConceptRecord("example", "Review an example from the source material."),
+        ConceptRecord("process", "Review the process described in the source material."),
+        ConceptRecord("application", "Review how the material can be applied."),
+    ]
 
 
-def _cycle_take(items: list[str], count: int) -> list[str]:
+def _coerce_concept_record(concept: Any, source_text: str = "") -> ConceptRecord:
+    if isinstance(concept, dict):
+        title = _clean_concept_title(concept.get("title") or concept.get("concept") or concept.get("name"))
+        source_sentence = str(concept.get("source_sentence") or concept.get("sourceSentence") or "").strip()
+        explanation = str(concept.get("explanation") or "").strip()
+    else:
+        title = _clean_concept_title(getattr(concept, "title", concept))
+        source_sentence = str(
+            getattr(concept, "source_sentence", "") or getattr(concept, "sourceSentence", "")
+        ).strip()
+        explanation = str(getattr(concept, "explanation", "") or "").strip()
+
+    if not source_sentence and source_text and title:
+        source_sentence = _find_source_sentence(title, source_text)
+    if not explanation and source_sentence:
+        explanation = f"{title}: {source_sentence.rstrip('.!?')}."
+    if not explanation and title:
+        explanation = f"{title}: review this concept in the source material."
+    return ConceptRecord(title=title, explanation=explanation, source_sentence=source_sentence)
+
+
+def _clean_concept_title(value: Any) -> str:
+    return " ".join(str(value or "").split()).strip(" .,:;")
+
+
+def _compose_flashcard_answer(concept: ConceptRecord) -> str:
+    if concept.source_sentence:
+        return f"{concept.title}: {concept.source_sentence.rstrip('.!?')}."
+    return concept.explanation or f"{concept.title}: review this concept in the source material."
+
+
+def _compose_practice_prompt(concept: ConceptRecord) -> str:
+    if concept.source_sentence:
+        return f"In your own words, explain {concept.title} using this source clue: {concept.source_sentence}"
+    return f"In your own words, explain {concept.title}."
+
+
+def _fill_in_prompt(concept: ConceptRecord) -> str:
+    if concept.source_sentence:
+        pattern = re.compile(re.escape(concept.title), re.IGNORECASE)
+        clue = pattern.sub("_____", concept.source_sentence, count=1)
+        if clue != concept.source_sentence:
+            return f"Fill in the blank from the source: {clue}"
+    return "Fill in the blank: _____ is one of the key concepts from this material."
+
+
+def _find_source_sentence(title: str, source_text: str) -> str:
+    words = [re.escape(word) for word in title.lower().split() if word]
+    if not words:
+        return ""
+    sentences = [
+        sentence.strip()
+        for sentence in re.split(r"(?<=[.!?])\s+", re.sub(r"\s+", " ", source_text).strip())
+        if sentence.strip()
+    ]
+    phrase_pattern = re.compile(r"\b" + re.escape(title.lower()) + r"\b", re.IGNORECASE)
+    for sentence in sentences:
+        if phrase_pattern.search(sentence):
+            return sentence
+    for sentence in sentences:
+        lowered = sentence.lower()
+        if all(re.search(r"\b" + word + r"\b", lowered) for word in words):
+            return sentence
+    return ""
+
+
+def _cycle_take(items: list[T], count: int) -> list[T]:
     return [items[index % len(items)] for index in range(count)]
 
 

@@ -1,6 +1,6 @@
 import AdmZip from 'adm-zip';
 import { PDFParse } from 'pdf-parse';
-import { extractKeyConcepts } from '../src/lib/study.js';
+import { extractKeyConceptDetails } from '../src/lib/study.js';
 
 export class SourceParseError extends Error {
   constructor(message, status = 400) {
@@ -13,11 +13,13 @@ export class SourceParseError extends Error {
 export function parseTextSource(text, title = 'Pasted text') {
   const cleaned = cleanText(text);
   if (!cleaned) throw new SourceParseError('No readable text was found.');
+  const conceptDetails = extractKeyConceptDetails(cleaned);
   return {
     title,
     sourceType: 'text',
     text: cleaned,
-    concepts: extractKeyConcepts(cleaned),
+    concepts: conceptDetails.map((concept) => concept.title),
+    conceptDetails,
   };
 }
 
@@ -44,11 +46,13 @@ export async function parseFileSource(file) {
 
   const cleaned = cleanText(text);
   if (!cleaned) throw new SourceParseError('No readable text was found in the selected file.');
+  const conceptDetails = extractKeyConceptDetails(cleaned);
   return {
     title: originalName,
     sourceType,
     text: cleaned,
-    concepts: extractKeyConcepts(cleaned),
+    concepts: conceptDetails.map((concept) => concept.title),
+    conceptDetails,
   };
 }
 
@@ -79,11 +83,13 @@ export async function parseUrlSource(url) {
 
   const cleaned = cleanText(text);
   if (!cleaned) throw new SourceParseError('No readable text was found at the web link.');
+  const conceptDetails = extractKeyConceptDetails(cleaned);
   return {
     title: title || url,
     sourceType: 'web',
     text: cleaned,
-    concepts: extractKeyConcepts(cleaned),
+    concepts: conceptDetails.map((concept) => concept.title),
+    conceptDetails,
   };
 }
 
