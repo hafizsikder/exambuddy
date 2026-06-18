@@ -306,7 +306,8 @@ def _clean_concept_title(value: Any) -> str:
 
 def _compose_flashcard_answer(concept: ConceptRecord) -> str:
     if concept.items:
-        lines = [concept.explanation.rstrip(".")] if concept.explanation else []
+        summary = concept.explanation.rstrip(".")
+        lines = [summary] if summary and len(summary) <= 220 else []
         lines.extend(concept.items)
         unique_lines: list[str] = []
         seen: set[str] = set()
@@ -316,10 +317,24 @@ def _compose_flashcard_answer(concept: ConceptRecord) -> str:
                 continue
             seen.add(normalized)
             unique_lines.append(line)
+        unique_lines = unique_lines[:6]
         return "\n".join(line if line.endswith((".", "!", "?")) else f"{line}." for line in unique_lines)
     if concept.source_sentence:
-        return f"{concept.title}: {concept.source_sentence.rstrip('.!?')}."
+        source = concept.source_sentence.rstrip(".!?")
+        if _same_title_prefix(source, concept.title):
+            return f"{source}."
+        return f"{concept.title}: {source}."
     return concept.explanation or f"{concept.title}: review this concept in the source material."
+
+
+def _same_title_prefix(text: str, title: str) -> bool:
+    def normalize(value: str) -> str:
+        value = re.sub(r"[^a-z0-9]+", " ", value.lower()).strip()
+        return re.sub(r"\bdefinitions?\b", "definition", value)
+
+    normalized_text = normalize(text)
+    normalized_title = normalize(title)
+    return normalized_text.startswith(normalized_title) or normalized_text.startswith(normalized_title.rstrip("s"))
 
 
 def _compose_practice_prompt(concept: ConceptRecord) -> str:

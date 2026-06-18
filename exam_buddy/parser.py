@@ -394,15 +394,17 @@ def _extract_structured_study_blocks(text: str) -> list[StudyBlock]:
     used_indices: set[int] = set()
 
     population_block = _population_sampling_block(entries)
+    population_index: int | None = None
     if population_block:
-        blocks.append(population_block)
-        used_indices.update(
-            index
-            for index, (heading, _body) in enumerate(entries)
-            if _normalize_heading(heading) in POPULATION_GROUP_HEADINGS
-        )
+        for index, (heading, _body) in enumerate(entries):
+            if _normalize_heading(heading) in POPULATION_GROUP_HEADINGS:
+                used_indices.add(index)
+                if population_index is None:
+                    population_index = index
 
     for index, (heading, body) in enumerate(entries):
+        if population_block and index == population_index:
+            blocks.append(population_block)
         if index in used_indices:
             continue
         block = _entry_to_study_block(heading, body)
@@ -753,7 +755,7 @@ def _normalize_heading(heading: str) -> str:
 
 
 def _is_lecture_marker(line: str) -> bool:
-    return bool(re.match(r"^(Lecture|Slide)\s+\d+\s*:?", line, re.I))
+    return bool(re.match(r"^(Chapter|Lecture|Slide)\s+\d+\s*:?", line, re.I))
 
 
 def _is_noise_line(line: str) -> bool:

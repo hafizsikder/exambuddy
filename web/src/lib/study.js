@@ -231,14 +231,18 @@ function extractStructuredStudyBlocks(text) {
   const blocks = [];
   const used = new Set();
   const populationBlock = populationSamplingBlock(entries);
+  let populationIndex = null;
   if (populationBlock) {
-    blocks.push(populationBlock);
     entries.forEach(([heading], index) => {
-      if (POPULATION_GROUP_HEADINGS.has(normalizeHeading(heading))) used.add(index);
+      if (POPULATION_GROUP_HEADINGS.has(normalizeHeading(heading))) {
+        used.add(index);
+        if (populationIndex === null) populationIndex = index;
+      }
     });
   }
 
   entries.forEach(([heading, body], index) => {
+    if (populationBlock && index === populationIndex) blocks.push(populationBlock);
     if (used.has(index)) return;
     const block = entryToStudyBlock(heading, body);
     if (block) blocks.push(block);
@@ -608,18 +612,35 @@ function cleanConceptTitle(value) {
 function composeFlashcardAnswer(concept) {
   if (concept.items?.length) {
     const seen = new Set();
-    return [concept.explanation.replace(/[.!?]+$/g, ''), ...concept.items]
+    const summary = concept.explanation.replace(/[.!?]+$/g, '');
+    return [summary.length <= 220 ? summary : '', ...concept.items]
       .filter((line) => {
         const normalized = String(line || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
         if (!normalized || seen.has(normalized)) return false;
         seen.add(normalized);
         return true;
       })
+      .slice(0, 6)
       .map((line) => (/[.!?]$/.test(line) ? line : `${line}.`))
       .join('\n');
   }
-  if (concept.sourceSentence) return `${concept.title}: ${concept.sourceSentence.replace(/[.!?]+$/g, '')}.`;
+  if (concept.sourceSentence) {
+    const source = concept.sourceSentence.replace(/[.!?]+$/g, '');
+    return sameTitlePrefix(source, concept.title) ? `${source}.` : `${concept.title}: ${source}.`;
+  }
   return concept.explanation || `${concept.title}: review this concept in the source material.`;
+}
+
+function sameTitlePrefix(text, title) {
+  const normalize = (value) =>
+    String(value || '')
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, ' ')
+      .replace(/\bdefinitions?\b/g, 'definition')
+      .trim();
+  const normalizedText = normalize(text);
+  const normalizedTitle = normalize(title);
+  return normalizedText.startsWith(normalizedTitle) || normalizedText.startsWith(normalizedTitle.replace(/s$/, ''));
 }
 
 function composePracticePrompt(concept) {
@@ -745,7 +766,7 @@ function normalizeHeading(heading) {
 }
 
 function isLectureMarker(line) {
-  return /^(Lecture|Slide)\s+\d+\s*:?/i.test(line);
+  return /^(Chapter|Lecture|Slide)\s+\d+\s*:?/i.test(line);
 }
 
 function isNoiseLine(line) {
