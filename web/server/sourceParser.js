@@ -1,6 +1,6 @@
 import AdmZip from 'adm-zip';
 import { PDFParse } from 'pdf-parse';
-import { extractKeyConceptDetails } from '../src/lib/study.js';
+import { extractKeyConceptDetails, extractStudyBlocks } from '../src/lib/study.js';
 
 export class SourceParseError extends Error {
   constructor(message, status = 400) {
@@ -13,13 +13,15 @@ export class SourceParseError extends Error {
 export function parseTextSource(text, title = 'Pasted text') {
   const cleaned = cleanText(text);
   if (!cleaned) throw new SourceParseError('No readable text was found.');
-  const conceptDetails = extractKeyConceptDetails(cleaned);
+  const studyBlocks = extractStudyBlocks(cleaned);
+  const conceptDetails = studyBlocksToConceptDetails(studyBlocks, cleaned);
   return {
     title,
     sourceType: 'text',
     text: cleaned,
     concepts: conceptDetails.map((concept) => concept.title),
     conceptDetails,
+    studyBlocks,
   };
 }
 
@@ -46,13 +48,15 @@ export async function parseFileSource(file) {
 
   const cleaned = cleanText(text);
   if (!cleaned) throw new SourceParseError('No readable text was found in the selected file.');
-  const conceptDetails = extractKeyConceptDetails(cleaned);
+  const studyBlocks = extractStudyBlocks(cleaned);
+  const conceptDetails = studyBlocksToConceptDetails(studyBlocks, cleaned);
   return {
     title: originalName,
     sourceType,
     text: cleaned,
     concepts: conceptDetails.map((concept) => concept.title),
     conceptDetails,
+    studyBlocks,
   };
 }
 
@@ -83,13 +87,15 @@ export async function parseUrlSource(url) {
 
   const cleaned = cleanText(text);
   if (!cleaned) throw new SourceParseError('No readable text was found at the web link.');
-  const conceptDetails = extractKeyConceptDetails(cleaned);
+  const studyBlocks = extractStudyBlocks(cleaned);
+  const conceptDetails = studyBlocksToConceptDetails(studyBlocks, cleaned);
   return {
     title: title || url,
     sourceType: 'web',
     text: cleaned,
     concepts: conceptDetails.map((concept) => concept.title),
     conceptDetails,
+    studyBlocks,
   };
 }
 
@@ -149,6 +155,17 @@ function cleanText(text) {
     .replace(/[ \t]+/g, ' ')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
+}
+
+function studyBlocksToConceptDetails(studyBlocks, text) {
+  if (studyBlocks.length) {
+    return studyBlocks.map((block) => ({
+      title: block.title,
+      explanation: [block.summary, ...(block.items || [])].filter(Boolean).join('\n'),
+      sourceSentence: block.sourceExcerpt || '',
+    }));
+  }
+  return extractKeyConceptDetails(text);
 }
 
 function decodeEntities(text) {

@@ -23,7 +23,7 @@ function buildPrompt(concepts, sourceText, cardCount, quizCount) {
   const conceptEvidence = (Array.isArray(concepts) ? concepts : [])
     .map((concept) => {
       if (concept && typeof concept === 'object') {
-        return `- ${concept.title || concept.concept || concept.name}: ${concept.sourceSentence || concept.source_sentence || concept.explanation || ''}`;
+        return `- ${concept.title || concept.concept || concept.name}: ${concept.summary || concept.explanation || ''} ${(concept.items || []).join('; ')} ${concept.sourceExcerpt || concept.sourceSentence || concept.source_sentence || ''}`;
       }
       return `- ${concept}`;
     })

@@ -120,9 +120,29 @@ const WEAK_SINGLE_WORDS = new Set([
 
 const ACRONYMS = new Set(['atp', 'dna', 'rna', 'html', 'css', 'api', 'cpu', 'gpu', 'pdf']);
 const QUESTION_TYPES = ['mcq', 'fill_in', 'rearrange', 'math_problem'];
+const POPULATION_GROUP_HEADINGS = new Set(['population', 'finite population', 'infinite population', 'sample', 'sampling unit', 'sampling frame']);
 
 export function extractKeyConcepts(text, { minimum = 5, maximum = 24 } = {}) {
   return extractKeyConceptDetails(text, { minimum, maximum }).map((concept) => concept.title);
+}
+
+export function extractStudyBlocks(text, { minimum = 5, maximum = 24 } = {}) {
+  const blocks = extractStructuredStudyBlocks(text);
+  if (!blocks.length) {
+    const seen = new Set(blocks.map((block) => block.title.toLowerCase()));
+    for (const concept of extractKeyConceptDetails(text, { minimum, maximum })) {
+      if (seen.has(concept.title.toLowerCase())) continue;
+      blocks.push({
+        title: concept.title,
+        type: 'concept',
+        summary: concept.explanation,
+        items: [],
+        sourceExcerpt: concept.sourceSentence,
+      });
+      seen.add(concept.title.toLowerCase());
+    }
+  }
+  return blocks.slice(0, maximum);
 }
 
 export function extractKeyConceptDetails(text, { minimum = 5, maximum = 24 } = {}) {
@@ -204,6 +224,26 @@ export function extractKeyConceptDetails(text, { minimum = 5, maximum = 24 } = {
     explanation: buildExplanation(candidate, candidateSentence.get(candidate) || ''),
     sourceSentence: candidateSentence.get(candidate) || '',
   }));
+}
+
+function extractStructuredStudyBlocks(text) {
+  const entries = extractHeadingEntries(text);
+  const blocks = [];
+  const used = new Set();
+  const populationBlock = populationSamplingBlock(entries);
+  if (populationBlock) {
+    blocks.push(populationBlock);
+    entries.forEach(([heading], index) => {
+      if (POPULATION_GROUP_HEADINGS.has(normalizeHeading(heading))) used.add(index);
+    });
+  }
+
+  entries.forEach(([heading, body], index) => {
+    if (used.has(index)) return;
+    const block = entryToStudyBlock(heading, body);
+    if (block) blocks.push(block);
+  });
+  return dedupeStudyBlocks(blocks);
 }
 
 export function generateStudySet(concepts, { cardCount = 10, quizCount = 12, sourceText = '' } = {}) {
@@ -384,6 +424,135 @@ function prepareConcepts(concepts) {
   return prepareConceptRecords(concepts).map((concept) => concept.title);
 }
 
+function extractHeadingEntries(text) {
+  const lines = studyLines(text);
+  const entries = [];
+  let currentHeading = '';
+  let currentBody = [];
+  let previousBlank = true;
+  for (const line of lines) {
+    if (!line) {
+      previousBlank = true;
+      continue;
+    }
+    if (isLectureMarker(line)) {
+      previousBlank = true;
+      continue;
+    }
+    const [heading, rest] = splitHeadingLine(line);
+    if (heading && currentHeading && !previousBlank && isDetailLabel(heading)) {
+      currentBody.push(line);
+    } else if (heading) {
+      if (currentHeading) entries.push([currentHeading, currentBody.join(' ').trim()]);
+      currentHeading = heading;
+      currentBody = rest ? [rest] : [];
+    } else if (previousBlank && isStudyHeading(line)) {
+      if (currentHeading) entries.push([currentHeading, currentBody.join(' ').trim()]);
+      currentHeading = line;
+      currentBody = [];
+    } else if (currentHeading) {
+      currentBody.push(line);
+    }
+    previousBlank = false;
+  }
+  if (currentHeading) entries.push([currentHeading, currentBody.join(' ').trim()]);
+  return entries;
+}
+
+function studyLines(text) {
+  return cleanText(text)
+    .split('\n')
+    .map((line) => line.replace(/\s+/g, ' ').trim())
+    .filter((line) => !line || !isNoiseLine(line));
+}
+
+function splitHeadingLine(line) {
+  if (line.length > 180 || !line.includes(':')) return ['', ''];
+  const colon = line.indexOf(':');
+  const heading = line.slice(0, colon).trim();
+  const rest = line.slice(colon + 1).trim();
+  return isStudyHeading(heading) ? [heading, rest] : ['', ''];
+}
+
+function isStudyHeading(heading) {
+  const normalized = normalizeHeading(heading);
+  if (['lecture', 'example', 'solution', 'step'].includes(normalized) || normalized.startsWith('step ')) return true;
+  return /^[A-Z][A-Za-z0-9 &/().-]{2,85}$/.test(heading) && !/^(as for example|for example|following)/i.test(heading);
+}
+
+function isDetailLabel(heading) {
+  return ['technique', 'techniques', 'example', 'examples', 'note', 'notes'].includes(normalizeHeading(heading));
+}
+
+function entryToStudyBlock(heading, body) {
+  if (!body) return null;
+  const normalized = normalizeHeading(heading);
+  const items = extractListItems(body);
+  if (normalized.startsWith('definition of ') || normalized.startsWith('definitions of ')) {
+    const prefixLength = normalized.startsWith('definitions of ') ? 'Definitions of '.length : 'Definition of '.length;
+    const subject = titleCase(heading.slice(prefixLength));
+    return {
+      title: `Definitions of ${subject}`,
+      type: 'definition',
+      summary: definitionSummary(subject, body),
+      items: techniqueItems(body).length ? techniqueItems(body) : items,
+      sourceExcerpt: sourceExcerpt(heading, body),
+    };
+  }
+  if (normalized.startsWith('importance of ')) {
+    return { title: titleCase(heading), type: 'list', summary: firstSentence(body), items: items.length ? items : sentenceItems(body), sourceExcerpt: sourceExcerpt(heading, body) };
+  }
+  if (
+    normalized.startsWith('methods of ') ||
+    normalized.startsWith('types of ') ||
+    normalized.startsWith('use of ') ||
+    normalized.startsWith('basic principle')
+  ) {
+    return { title: titleCase(heading), type: 'list', summary: firstSentence(body), items, sourceExcerpt: sourceExcerpt(heading, body) };
+  }
+  if (normalized.startsWith('constructing ') || normalized.startsWith('steps for ')) {
+    return { title: titleCase(heading), type: 'steps', summary: firstSentence(body), items, sourceExcerpt: sourceExcerpt(heading, body) };
+  }
+  if (looksLikeDefinition(heading, body)) {
+    return { title: titleCase(heading), type: 'definition', summary: definitionSummary(heading, body), items, sourceExcerpt: sourceExcerpt(heading, body) };
+  }
+  if (items.length) return { title: titleCase(heading), type: 'list', summary: firstSentence(body), items, sourceExcerpt: sourceExcerpt(heading, body) };
+  return null;
+}
+
+function sentenceItems(body) {
+  return splitSentences(body)
+    .map((sentence) => cleanItem(sentence))
+    .filter((sentence) => sentence.length >= 8);
+}
+
+function populationSamplingBlock(entries) {
+  const found = new Map();
+  const excerpts = [];
+  for (const [heading, body] of entries) {
+    const normalized = normalizeHeading(heading);
+    if (POPULATION_GROUP_HEADINGS.has(normalized)) {
+      found.set(normalized, body);
+      excerpts.push(sourceExcerpt(heading, body));
+    }
+  }
+  if (!found.has('population') || !found.has('sample') || !found.has('sampling frame')) return null;
+  const items = [];
+  if (found.has('population')) items.push('Population -> Entire group under study.');
+  if (found.has('finite population')) items.push('Finite population -> Countable units.');
+  if (found.has('infinite population')) items.push('Infinite population -> Uncountable units.');
+  if (found.has('sample')) items.push('Sample -> Representative part of population.');
+  if (found.has('sampling unit')) items.push('Sampling unit -> Smallest unit information is collected from.');
+  if (found.has('sampling frame')) items.push('Sampling frame -> List of all population units.');
+  return {
+    title: 'Population & Sampling',
+    type: 'grouped_definitions',
+    summary: 'Core population and sampling terms used to define what is studied and what information is collected.',
+    items,
+    sourceExcerpt: excerpts.join(' ').slice(0, 900),
+  };
+}
+
 function prepareConceptRecords(concepts, sourceText = '') {
   const clean = [];
   const seen = new Set();
@@ -410,11 +579,15 @@ function coerceConceptRecord(concept, sourceText = '') {
   let title = '';
   let explanation = '';
   let sourceSentence = '';
+  let items = [];
+  let blockType = 'concept';
 
   if (concept && typeof concept === 'object') {
     title = cleanConceptTitle(concept.title || concept.concept || concept.name);
-    explanation = String(concept.explanation || '').trim();
-    sourceSentence = String(concept.sourceSentence || concept.source_sentence || '').trim();
+    explanation = String(concept.summary || concept.explanation || '').trim();
+    sourceSentence = String(concept.sourceExcerpt || concept.sourceSentence || concept.source_sentence || '').trim();
+    items = Array.isArray(concept.items) ? concept.items.map((item) => String(item).trim()).filter(Boolean) : [];
+    blockType = String(concept.type || concept.block_type || 'concept').trim() || 'concept';
   } else {
     title = cleanConceptTitle(concept);
   }
@@ -422,7 +595,7 @@ function coerceConceptRecord(concept, sourceText = '') {
   if (!sourceSentence && sourceText && title) sourceSentence = findSourceSentence(title, sourceText);
   if (!explanation && sourceSentence) explanation = `${title}: ${sourceSentence.replace(/[.!?]+$/g, '')}.`;
   if (!explanation && title) explanation = `${title}: review this concept in the source material.`;
-  return { title, explanation, sourceSentence };
+  return { title, explanation, sourceSentence, items, type: blockType };
 }
 
 function cleanConceptTitle(value) {
@@ -433,6 +606,18 @@ function cleanConceptTitle(value) {
 }
 
 function composeFlashcardAnswer(concept) {
+  if (concept.items?.length) {
+    const seen = new Set();
+    return [concept.explanation.replace(/[.!?]+$/g, ''), ...concept.items]
+      .filter((line) => {
+        const normalized = String(line || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+        if (!normalized || seen.has(normalized)) return false;
+        seen.add(normalized);
+        return true;
+      })
+      .map((line) => (/[.!?]$/.test(line) ? line : `${line}.`))
+      .join('\n');
+  }
   if (concept.sourceSentence) return `${concept.title}: ${concept.sourceSentence.replace(/[.!?]+$/g, '')}.`;
   return concept.explanation || `${concept.title}: review this concept in the source material.`;
 }
@@ -474,6 +659,114 @@ function makeOptions(answer, concepts, seed) {
   while (distractors.length < 3) distractors.push(`related idea ${distractors.length + 1}`);
   const options = [answer, ...distractors.slice(0, 3)];
   return seededShuffle(options, seed);
+}
+
+function extractListItems(body) {
+  const definitionMatches = Array.from(
+    body.matchAll(/([A-Z][A-Za-z ]{2,60})\s*(?:->|→|:)\s*(.+?)(?=\s+[A-Z][A-Za-z ]{2,60}\s*(?:->|→|:)|$)/g),
+    (match) => cleanItem(`${match[1].trim()} -> ${match[2].trim()}`),
+  ).filter(Boolean);
+  if (definitionMatches.length >= 2) return definitionMatches;
+
+  const techniqueMatches = techniqueItems(body);
+  if (techniqueMatches.length >= 2) return techniqueMatches;
+  const bulletMatches = Array.from(body.matchAll(/(?:^|\s)[•\-]\s+([^•\-]+?)(?=(?:\s[•\-]\s+)|$)/g), (match) => cleanItem(match[1])).filter(Boolean);
+  if (bulletMatches.length) return bulletMatches;
+  const letterMatches = Array.from(
+    body.matchAll(/(?:^|\s)(\([a-zivx]+\)|[a-zivx]+\))\s+(.+?)(?=(?:\s(?:\([a-zivx]+\)|[a-zivx]+\))\s+)|$)/gi),
+    (match) => cleanItem(match[2]),
+  ).filter(Boolean);
+  if (letterMatches.length >= 2) return letterMatches;
+  return Array.from(body.matchAll(/(Step\s+\d+)\s*:\s*(.+?)(?=(?:\sStep\s+\d+\s*:)|$)/gi), (match) => cleanItem(`${match[1]}: ${match[2]}`)).filter(Boolean);
+}
+
+function techniqueItems(body) {
+  const match = body.match(/techniques?(?:\s+such\s+as|:)\s+(.+?)(?:\s+to\s+|\.)/i);
+  if (!match) return [];
+  return match[1]
+    .split(/,|\band\b/i)
+    .map((item) => sentenceCase(item.trim().toLowerCase()))
+    .filter(Boolean);
+}
+
+function definitionSummary(_title, body) {
+  const text = firstSentence(body);
+  for (const pattern of [/may be defined as\s+(.+)/i, /is known as\s+(.+)/i, /is\s+(.+)/i]) {
+    const match = text.match(pattern);
+    if (match) return sentenceCase(stripLeadingArticle(cleanItem(match[1])));
+  }
+  return sentenceCase(cleanItem(text));
+}
+
+function looksLikeDefinition(_heading, body) {
+  return body.length >= 20 && /(known as|defined as|is a|is an|is the|refers to)/i.test(body);
+}
+
+function firstSentence(text) {
+  return cleanItem(String(text || '').replace(/\s+/g, ' ').trim().split(/(?<=[.!?])\s+/)[0] || '');
+}
+
+function cleanItem(item) {
+  const cleaned = String(item || '').replace(/\s+/g, ' ').trim().replace(/[.;:]+$/g, '');
+  return cleaned && !/[.!?]$/.test(cleaned) ? `${cleaned}.` : cleaned;
+}
+
+function sentenceCase(item) {
+  const value = String(item || '').trim();
+  return value ? `${value.slice(0, 1).toUpperCase()}${value.slice(1)}` : value;
+}
+
+function stripLeadingArticle(item) {
+  return String(item || '').trim().replace(/^(an?|the)\s+/i, '');
+}
+
+function titleCase(value) {
+  const smallWords = new Set(['and', 'or', 'of', 'in', 'to', 'for', 'the', 'a', 'an']);
+  return String(value || '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/[.:]+$/g, '')
+    .split(' ')
+    .map((word, index) => {
+      const lower = word.toLowerCase();
+      if (ACRONYMS.has(lower)) return lower.toUpperCase();
+      if (index && smallWords.has(lower)) return lower;
+      return `${lower.slice(0, 1).toUpperCase()}${lower.slice(1)}`;
+    })
+    .join(' ');
+}
+
+function sourceExcerpt(heading, body) {
+  return `${heading}: ${body}`.trim().slice(0, 900);
+}
+
+function normalizeHeading(heading) {
+  return String(heading || '').replace(/\s+/g, ' ').trim().replace(/[.:]+$/g, '').replace(/\s+\d+$/g, '').toLowerCase();
+}
+
+function isLectureMarker(line) {
+  return /^(Lecture|Slide)\s+\d+\s*:?/i.test(line);
+}
+
+function isNoiseLine(line) {
+  return (
+    line === 'Introduction to Statistics and Data Science' ||
+    line === 'Professor, Department of SDS' ||
+    /^Dr\.?\s+Mohd\.?\s+Muzibur\s+Rahman\b/i.test(line) ||
+    /^\d+$/.test(line)
+  );
+}
+
+function dedupeStudyBlocks(blocks) {
+  const seen = new Set();
+  const result = [];
+  for (const block of blocks) {
+    const key = block.title.toLowerCase();
+    if (seen.has(key) || (!block.summary && !block.items?.length)) continue;
+    result.push(block);
+    seen.add(key);
+  }
+  return result;
 }
 
 function splitSentences(text) {

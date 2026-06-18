@@ -127,7 +127,7 @@ export default function App() {
   const quizQuestion = quizSession?.currentQuestion;
   const mastery = practiceSession?.masteryPercent ?? 0;
 
-  const conceptsPreview = useMemo(() => source?.conceptDetails?.slice(0, 18) ?? source?.concepts?.slice(0, 18) ?? [], [source]);
+  const conceptsPreview = useMemo(() => source?.studyBlocks?.slice(0, 18) ?? source?.conceptDetails?.slice(0, 18) ?? source?.concepts?.slice(0, 18) ?? [], [source]);
 
   async function runJob(message, job, onDone) {
     setIsBusy(true);
@@ -188,7 +188,7 @@ export default function App() {
       useAi ? 'Generating with AI' : 'Generating locally',
       () =>
         API.generate({
-          concepts: source.conceptDetails?.length ? source.conceptDetails : source.concepts,
+          concepts: source.studyBlocks?.length ? source.studyBlocks : source.conceptDetails?.length ? source.conceptDetails : source.concepts,
           sourceText: source.text,
           cardCount,
           quizCount,
@@ -346,7 +346,8 @@ export default function App() {
                 {conceptsPreview.map((concept) => (
                   <li key={concept.title || concept}>
                     <strong>{concept.title || concept}</strong>
-                    {concept.sourceSentence || concept.explanation ? <span>{concept.sourceSentence || concept.explanation}</span> : null}
+                    {concept.summary || concept.sourceSentence || concept.explanation ? <span>{concept.summary || concept.sourceSentence || concept.explanation}</span> : null}
+                    {concept.items?.length ? <span>{concept.items.slice(0, 4).join('; ')}</span> : null}
                   </li>
                 ))}
               </ol>

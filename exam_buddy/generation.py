@@ -19,6 +19,8 @@ class ConceptRecord:
     title: str
     explanation: str = ""
     source_sentence: str = ""
+    items: tuple[str, ...] = ()
+    block_type: str = "concept"
 
 
 class LocalStudyGenerator:
@@ -169,7 +171,8 @@ def check_answer(question: QuizQuestion | PracticeQuestion, response: str) -> bo
 def _build_ai_prompt(concepts: list[Any], card_count: int, quiz_count: int, source_text: str) -> str:
     concept_records = _prepare_concept_records(concepts, source_text)
     concept_text = "\n".join(
-        f"- {concept.title}: {concept.source_sentence or concept.explanation}" for concept in concept_records
+        f"- {concept.title} ({concept.block_type}): {concept.explanation} {'; '.join(concept.items)}"
+        for concept in concept_records
     )
     excerpt = source_text[:6000]
     return f"""
@@ -274,13 +277,19 @@ def _coerce_concept_record(concept: Any, source_text: str = "") -> ConceptRecord
     if isinstance(concept, dict):
         title = _clean_concept_title(concept.get("title") or concept.get("concept") or concept.get("name"))
         source_sentence = str(concept.get("source_sentence") or concept.get("sourceSentence") or "").strip()
-        explanation = str(concept.get("explanation") or "").strip()
+        explanation = str(concept.get("summary") or concept.get("explanation") or "").strip()
+        items = tuple(str(item).strip() for item in concept.get("items", []) if str(item).strip())
+        block_type = str(concept.get("block_type") or concept.get("type") or "concept").strip() or "concept"
     else:
         title = _clean_concept_title(getattr(concept, "title", concept))
         source_sentence = str(
-            getattr(concept, "source_sentence", "") or getattr(concept, "sourceSentence", "")
+            getattr(concept, "source_excerpt", "")
+            or getattr(concept, "source_sentence", "")
+            or getattr(concept, "sourceSentence", "")
         ).strip()
-        explanation = str(getattr(concept, "explanation", "") or "").strip()
+        explanation = str(getattr(concept, "summary", "") or getattr(concept, "explanation", "") or "").strip()
+        items = tuple(str(item).strip() for item in getattr(concept, "items", ()) if str(item).strip())
+        block_type = str(getattr(concept, "block_type", "concept") or "concept").strip()
 
     if not source_sentence and source_text and title:
         source_sentence = _find_source_sentence(title, source_text)
@@ -288,7 +297,7 @@ def _coerce_concept_record(concept: Any, source_text: str = "") -> ConceptRecord
         explanation = f"{title}: {source_sentence.rstrip('.!?')}."
     if not explanation and title:
         explanation = f"{title}: review this concept in the source material."
-    return ConceptRecord(title=title, explanation=explanation, source_sentence=source_sentence)
+    return ConceptRecord(title=title, explanation=explanation, source_sentence=source_sentence, items=items, block_type=block_type)
 
 
 def _clean_concept_title(value: Any) -> str:
@@ -296,6 +305,18 @@ def _clean_concept_title(value: Any) -> str:
 
 
 def _compose_flashcard_answer(concept: ConceptRecord) -> str:
+    if concept.items:
+        lines = [concept.explanation.rstrip(".")] if concept.explanation else []
+        lines.extend(concept.items)
+        unique_lines: list[str] = []
+        seen: set[str] = set()
+        for line in lines:
+            normalized = re.sub(r"[^a-z0-9]+", " ", line.lower()).strip()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            unique_lines.append(line)
+        return "\n".join(line if line.endswith((".", "!", "?")) else f"{line}." for line in unique_lines)
     if concept.source_sentence:
         return f"{concept.title}: {concept.source_sentence.rstrip('.!?')}."
     return concept.explanation or f"{concept.title}: review this concept in the source material."

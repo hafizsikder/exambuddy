@@ -5,10 +5,102 @@ import {
   createTimedQuizSession,
   extractKeyConceptDetails,
   extractKeyConcepts,
+  extractStudyBlocks,
   generateStudySet,
 } from './study.js';
 
+const sdsExcerpt = `
+  Definition of Data Science: Data science may be defined as an interdisciplinary field
+  that combines scientific methods, algorithms, and systems to extract knowledge and
+  insights from structured and unstructured data. It encompasses various techniques
+  such as data mining, machine learning, and statistical analysis to uncover patterns,
+  trends, and correlations within data.
+
+  Importance of Statistics in Data Science: The importance of statistics for data science
+  and statistics for data analytics is immense. Exploring it through the below-mentioned
+  points:
+  • For description and quantification of data
+  • For data identification and conversion of data patterns into usable format
+  • Contributes to probability distribution and estimation
+  • Enhance the data visualization and reduce the assumptions
+
+  Lecture 2:
+  Population: A well define group or sector or area about that you want to draw your
+  conclusion or decision then the entire group is known as population.
+  Finite Population: If the population unit of a population is countable or a finite
+  number then this type of population is known as finite population.
+  Infinite Population: If the population unit of a population is not countable or not a
+  finite number then this type of population is known as infinite population.
+  Sample: A representative part of population is known as sample.
+  Sampling Frame: The entire list of population units is known as sampling frame.
+`;
+
+const sdsSlideStyleExcerpt = `
+  Definitions of Data Science
+  Data Science -> Interdisciplinary field using methods, algorithms, and systems to extract knowledge from structured/unstructured data.
+  Techniques: Data mining, Machine learning, Statistical analysis.
+
+  Importance of Statistics in Data Science
+  Description & quantification of data.
+  Pattern identification and conversion.
+  Probability distribution and estimation.
+  Data visualization enhancement.
+
+  Population & Sampling
+  Population -> Entire group under study.
+  Finite population -> Countable units (e.g., JU students).
+  Infinite population -> Uncountable units (e.g., fish in a river).
+  Sample -> Representative part of population.
+  Sampling frame -> List of all population units.
+`;
+
 describe('web study engine', () => {
+  it('extracts grouped study blocks from SDS lecture content', () => {
+    const blocks = extractStudyBlocks(sdsExcerpt, { minimum: 3, maximum: 8 });
+    const titles = blocks.map((block) => block.title);
+
+    expect(titles).toContain('Definitions of Data Science');
+    expect(titles).toContain('Importance of Statistics in Data Science');
+    expect(titles).toContain('Population & Sampling');
+
+    const dataScience = blocks.find((block) => block.title === 'Definitions of Data Science');
+    expect(dataScience.type).toBe('definition');
+    expect(dataScience.summary).toContain('Interdisciplinary field');
+    expect(dataScience.items.join('\n')).toContain('Data mining');
+    expect(dataScience.items.join('\n')).toContain('Machine learning');
+    expect(dataScience.items.join('\n')).toContain('Statistical analysis');
+
+    const population = blocks.find((block) => block.title === 'Population & Sampling');
+    expect(population.items.join('\n')).toContain('Population -> Entire group under study.');
+    expect(population.items.join('\n')).toContain('Finite population -> Countable units.');
+    expect(population.items.join('\n')).toContain('Infinite population -> Uncountable units.');
+    expect(population.items.join('\n')).toContain('Sample -> Representative part of population.');
+    expect(population.items.join('\n')).toContain('Sampling frame -> List of all population units.');
+  });
+
+  it('extracts grouped study blocks from slide-style SDS headings', () => {
+    const blocks = extractStudyBlocks(sdsSlideStyleExcerpt, { minimum: 3, maximum: 8 });
+    const titles = blocks.map((block) => block.title);
+
+    expect(titles.slice(0, 3)).toEqual([
+      'Definitions of Data Science',
+      'Importance of Statistics in Data Science',
+      'Population & Sampling',
+    ]);
+
+    const dataScience = blocks.find((block) => block.title === 'Definitions of Data Science');
+    expect(dataScience.summary).toContain('Interdisciplinary field');
+    expect(dataScience.items.join('\n')).toContain('Data mining');
+
+    const statistics = blocks.find((block) => block.title === 'Importance of Statistics in Data Science');
+    expect(statistics.items.join('\n')).toContain('Description & quantification of data.');
+    expect(statistics.items.join('\n')).toContain('Probability distribution and estimation.');
+
+    const population = blocks.find((block) => block.title === 'Population & Sampling');
+    expect(population.items.join('\n')).toContain('Finite population -> Countable units (e.g., JU students).');
+    expect(population.items.join('\n')).toContain('Sampling frame -> List of all population units.');
+  });
+
   it('extracts source-backed study ideas from source text', () => {
     const text = `
       Photosynthesis converts light energy into chemical energy. Chlorophyll
@@ -78,6 +170,20 @@ describe('web study engine', () => {
       new Set(['mcq', 'fill_in', 'rearrange', 'math_problem']),
     );
     expect(studySet.quizQuestions.every((question) => question.timerSeconds >= 20 && question.timerSeconds <= 60)).toBe(true);
+  });
+
+  it('builds flashcards directly from grouped study blocks', () => {
+    const blocks = extractStudyBlocks(sdsExcerpt, { minimum: 3, maximum: 8 });
+
+    const studySet = generateStudySet(blocks, { cardCount: 5, quizCount: 10, sourceText: sdsExcerpt });
+    const cards = Object.fromEntries(studySet.flashcards.map((card) => [card.concept, card]));
+
+    expect(cards['Definitions of Data Science'].answer).toContain('Interdisciplinary field');
+    expect(cards['Definitions of Data Science'].answer).toContain('Data mining');
+    expect(cards['Definitions of Data Science'].answer).toContain('Machine learning');
+    expect(cards['Population & Sampling'].answer).toContain('Population -> Entire group under study.');
+    expect(cards['Population & Sampling'].answer).toContain('Sampling frame -> List of all population units.');
+    expect(cards['Population & Sampling'].answer).not.toContain('review this concept in the source material');
   });
 
   it('builds flashcards from source evidence instead of generic filler', () => {

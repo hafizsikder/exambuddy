@@ -195,7 +195,7 @@ class ExamBuddyApp(tk.Tk):
         self.study_set = None
         self.study_signature = None
         self.concept_list.delete(0, "end")
-        for concept in content.concept_details or content.concepts:
+        for concept in content.study_blocks or content.concept_details or content.concepts:
             title = getattr(concept, "title", concept)
             self.concept_list.insert("end", title)
         self.status_value.set(f"Loaded {content.title}. Found {len(content.concepts)} key concepts.")
@@ -208,8 +208,11 @@ class ExamBuddyApp(tk.Tk):
 
         signature = (
             tuple(
-                (getattr(concept, "title", str(concept)), getattr(concept, "source_sentence", ""))
-                for concept in (self.parsed_content.concept_details or self.parsed_content.concepts)
+                (
+                    getattr(concept, "title", str(concept)),
+                    getattr(concept, "summary", getattr(concept, "source_sentence", "")),
+                )
+                for concept in (self.parsed_content.study_blocks or self.parsed_content.concept_details or self.parsed_content.concepts)
             ),
             self.card_count.get(),
             self.quiz_count.get(),
@@ -222,7 +225,7 @@ class ExamBuddyApp(tk.Tk):
         def build_study_set():
             generator = OpenAIStudyGenerator() if self.use_ai.get() else LocalStudyGenerator()
             return generator.generate(
-                self.parsed_content.concept_details or self.parsed_content.concepts,
+                self.parsed_content.study_blocks or self.parsed_content.concept_details or self.parsed_content.concepts,
                 card_count=self.card_count.get(),
                 quiz_count=self.quiz_count.get(),
                 source_text=self.parsed_content.text,
@@ -271,8 +274,14 @@ class ExamBuddyApp(tk.Tk):
 
     def _show_concepts(self) -> None:
         self._clear_mode_frame()
+        blocks = self.parsed_content.study_blocks or []
         details = self.parsed_content.concept_details or []
-        if details:
+        if blocks:
+            concepts = "\n\n".join(
+                f"{index + 1}. {block.title}\n   {block.summary}\n   " + "; ".join(block.items[:4])
+                for index, block in enumerate(blocks[:12])
+            )
+        elif details:
             concepts = "\n\n".join(
                 f"{index + 1}. {concept.title}\n   {concept.source_sentence or concept.explanation}"
                 for index, concept in enumerate(details[:12])
